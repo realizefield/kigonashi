@@ -286,14 +286,14 @@ details.dev pre { white-space: pre-wrap; word-break: break-all; background: var(
   <div class="grid" id="view-advice">
     <div class="panel">
       <form id="f" onsubmit="return false">
-        <fieldset class="ai"><legend>ことばで相談（AI）<small>相談と合わせて、お試し10回まで</small></legend>
+        <fieldset class="ai"><legend>ことばで相談（AI）<small>相談と合わせて、回数に限りがあります</small></legend>
           <label for="aiq" class="note" style="margin:0 0 8px;display:block">状況やお悩みを、話すように書いてください。項目を自動で選び直します。</label>
           <div class="examples" id="aiex"></div>
           <textarea id="aiq" maxlength="300" placeholder="例：同窓会で、少しかっこよく見せたいです。"></textarea>
           <div class="ai-row"><button type="button" class="go" id="aib">AIに相談する</button><span class="left-count" id="ail">残り10回</span></div>
           <div class="ai-out" id="aio" aria-live="polite"></div>
         </fieldset>
-        <fieldset class="ai eva"><legend>お気に入りの服を点数にする（AI）<small>相談と合わせて、お試し10回まで</small></legend>
+        <fieldset class="ai eva"><legend>お気に入りの服を点数にする（AI）<small>相談と合わせて、回数に限りがあります</small></legend>
           <p class="note" style="margin:0 0 10px">気になる服のページのアドレス（URL）を貼ってください。いまの入力（体型・場面・季節・色）と照らして、100点満点で評価します。最大4点まで入れられます。</p>
           <div id="evitems"></div>
           <div class="ai-row"><button type="button" class="small" id="evadd">＋ 服を1点ふやす</button></div>
@@ -1061,26 +1061,51 @@ function render() {
 /* ============ 7. AI相談（お試し10回） ============ */
 /* AIの呼び出し口：Claudeの中ではsample機能、自分のサイトでは /api/ai（Cloudflare側にAPIキーを隠した中継）を使う */
 const LINE_NOTE = "続きをご希望の方は、野田さんのLINEにご連絡ください。";
+const RELAY = "https://kesera-ai.kogentext.workers.dev"; // ケセラ共通のAI中継所（回数もここで数えます）
+let FROM_KESERA = false;
+try {
+  if (/[?&]from=kesera/.test(location.search)) sessionStorage.setItem("kigonashi-from", "kesera");
+  FROM_KESERA = sessionStorage.getItem("kigonashi-from") === "kesera";
+} catch (e) { FROM_KESERA = /[?&]from=kesera/.test(location.search); }
+function deviceId() {
+  try {
+    let d = localStorage.getItem("kigonashi-did");
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(d || "")) {
+      d = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem("kigonashi-did", d);
+    }
+    return d;
+  } catch (e) { return ""; }
+}
+let serverCounted = false;
+function applyServerCount(left, limit) {
+  if (typeof left !== "number" || typeof limit !== "number") return;
+  serverCounted = true; MAXTRY = limit; used = Math.max(0, Math.min(limit, limit - left));
+}
+async function relayPost(task, prompt) {
+  const r = await fetch(RELAY, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task, prompt, from: FROM_KESERA ? "kesera" : "", did: deviceId() }) });
+  let j = null; try { j = await r.json(); } catch (e) {}
+  if (j) applyServerCount(j.left, j.limit);
+  if (r.status === 429) { const e = new Error("rate"); e.code = (j && j.error === "quota") ? "quota" : "rate_limited"; throw e; }
+  if (!r.ok || !j) throw new Error("http " + r.status);
+  return j;
+}
 async function getSample() {
   if (window.claude && window.claude.use) return await window.claude.use("sample");
   if (!/^https?:$/.test(location.protocol)) return null;
-  return { json: async (prompt) => {
-    const r = await fetch("/api/ai", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt }) });
-    if (r.status === 429) { const e = new Error("rate"); e.code = "rate_limited"; throw e; }
-    if (!r.ok) throw new Error("http " + r.status);
-    return await r.json();
-  } };
+  return { json: async (prompt) => (await relayPost("kigonashi", prompt)).data };
 }
-
-const MAXTRY = 10;
+let MAXTRY = 10;
 let used = 0;
 try { used = Math.min(MAXTRY, Math.max(0, parseInt(localStorage.getItem("kigonashi-used") || "0", 10) || 0)); } catch (e) {}
 function saveUsed() { try { localStorage.setItem("kigonashi-used", String(used)); } catch (e) {} }
 function aiStatus() {
   const left = MAXTRY - used;
-  document.getElementById("ail").textContent = left > 0 ? `残り${left}回` : "お試しは終わりました。" + LINE_NOTE;
+  const doneMsg = FROM_KESERA ? "今月の回数を使いきりました。来月、またお使いいただけます。" : "お試しは終わりました。" + LINE_NOTE;
+  const leftMsg = FROM_KESERA ? `今月あと${left}回` : `残り${left}回`;
+  document.getElementById("ail").textContent = left > 0 ? leftMsg : doneMsg;
   document.getElementById("aib").disabled = left <= 0;
-  const el = document.getElementById("evl"); if (el) el.textContent = left > 0 ? `残り${left}回` : "お試しは終わりました。" + LINE_NOTE;
+  const el = document.getElementById("evl"); if (el) el.textContent = left > 0 ? leftMsg : doneMsg;
   const eb = document.getElementById("evb"); if (eb) eb.disabled = left <= 0;
 }
 const EXAMPLES = ["同窓会で、少しかっこよく見せたい", "孫の運動会で、動きやすく若々しく見せたい", "妻にダサいと思われない服が知りたい", "派手すぎず、野暮ったくない服にしたい", "デートで、清潔感のある服にしたい", "式典に失礼のない服を着たい"];
@@ -1171,6 +1196,7 @@ ${text}
     try { r = await sample.json(prompt); }
     catch (e) {
       if (e && e.code === "not_granted") { out.innerHTML = "<p>AI相談の使用が許可されませんでした。</p>"; return; }
+      if (e && e.code === "quota") { out.innerHTML = "<p>" + (FROM_KESERA ? "今月の回数を使いきりました。来月、またお使いいただけます。" : "お試しの回数を使いきりました。" + LINE_NOTE) + "</p>"; return; }
       if (e && e.code === "rate_limited") { out.innerHTML = "<p>ただいま混み合っています。少し待ってから、もう一度お試しください。</p>"; return; }
       throw e;
     }
@@ -1179,7 +1205,7 @@ ${text}
     if (r.relevant === false) { out.innerHTML = `<p>${esc(r.comment || "服選びのご相談をお書きください。")}</p><p class="note">回数は減っていません。</p>`; return; }
     const done = applyChanges(r.changes || {});
     if ([0, 1, 2].includes(r.pattern)) { selLevel = r.pattern; userPicked = true; } else userPicked = false;
-    used++; saveUsed(); touched = true;
+    if (!serverCounted) { used++; saveUsed(); } touched = true;
     buildChips(); render();
     out.innerHTML = `<p><b>${esc(r.comment || "ご相談に合わせて選び直しました。")}</b></p>` +
       (done.length ? `<p class="note" style="margin:0">変えた項目</p><ul>${done.map(d => `<li>${esc(d)}</li>`).join("")}</ul>` : `<p class="note">選択の変更はありませんでした。</p>`) +
@@ -1338,6 +1364,7 @@ ${JSON.stringify(items)}
     try { r = await sample.json(prompt); }
     catch (e) {
       if (e && e.code === "not_granted") { out.innerHTML = "<p>AI評価の使用が許可されませんでした。</p>"; return; }
+      if (e && e.code === "quota") { out.innerHTML = "<p>" + (FROM_KESERA ? "今月の回数を使いきりました。来月、またお使いいただけます。" : "お試しの回数を使いきりました。" + LINE_NOTE) + "</p>"; return; }
       if (e && e.code === "rate_limited") { out.innerHTML = "<p>ただいま混み合っています。少し待ってから、もう一度お試しください。</p>"; return; }
       throw e;
     }
@@ -1346,7 +1373,7 @@ ${JSON.stringify(items)}
     const P = [["色づかい", "colorScore", "colorNote"], ["サイズ・形", "fitScore", "fitNote"], ["清潔感・上品さ", "cleanScore", "cleanNote"], ["場面・季節", "sceneScore", "sceneNote"], ["若々しさ・かっこよさ", "youthScore", "youthNote"]];
     const sc = P.map(p => numIn(r[p[1]], 0, 20)); const total = sc.reduce((a, b) => a + b, 0);
     const lab = total >= 85 ? "えっ、かっこいい！" : total >= 70 ? "ちょっと素敵です" : total >= 50 ? "ダサくない。あと少しで素敵です" : "もう少しで整います";
-    used++; saveUsed();
+    if (!serverCounted) { used++; saveUsed(); }
     const low = r.confidence === "low";
     const miss = Array.isArray(r.missing) ? r.missing.filter(Boolean).slice(0, 3) : [];
     out.innerHTML = `<div class="score"><div class="num">${total}<small> / 100点</small></div><div class="lab">${lab}</div></div>
@@ -1741,6 +1768,34 @@ typeUI();
 
 buildChips();
 render();
+/* 開いたときに、サーバーに残りの回数を聞く（AIは呼びません） */
+if (!(window.claude && window.claude.use) && /^https?:$/.test(location.protocol)) {
+  relayPost("kigonashi_status", "").then(() => aiStatus()).catch(() => {});
+}
+</script>
+
+<!-- ===== 「ケセラにもどる」浮かぶボタン =====
+  着こなし相談室・萩の旅の栞など、ケセラの付属サイトの HTML に、
+  </body> の直前へ、このまま貼り付けます。
+  ケセラから開いたときだけ、画面の左上に、ボタンが出ます。 -->
+<style>
+#keseraBack { position:fixed; top:10px; left:10px; z-index:2147483000; display:none; align-items:center; gap:6px;
+  min-height:46px; padding:8px 16px; border-radius:999px; border:2px solid #a4335a; background:#fff; color:#a4335a;
+  font:700 16px/1.2 "BIZ UDGothic","Hiragino Sans","Yu Gothic",sans-serif; text-decoration:none; box-shadow:0 3px 12px rgba(0,0,0,.25); }
+#keseraBack:active { transform:scale(.97); }
+</style>
+<a id="keseraBack" href="https://realizefield.github.io/kesera/kesera-club.html">← ケセラにもどる</a>
+<script>
+(function () {
+  try {
+    if (window.top !== window.self || /[?&]embed=1/.test(location.search)) return; /* ケセラの中に組み込まれているときは出さない */
+    var q = location.search.indexOf('from=kesera') >= 0;
+    if (q) sessionStorage.setItem('fromKesera', '1');
+    if (q || sessionStorage.getItem('fromKesera') === '1' || /realizefield\.github\.io\/kesera\//.test(document.referrer)) {
+      document.getElementById('keseraBack').style.display = 'inline-flex';
+    }
+  } catch (e) { document.getElementById('keseraBack').style.display = 'inline-flex'; }
+})();
 </script>
 
 </body></html>
