@@ -1083,11 +1083,13 @@ function applyServerCount(left, limit) {
   serverCounted = true; MAXTRY = limit; used = Math.max(0, Math.min(limit, limit - left));
 }
 async function relayPost(task, prompt) {
-  const r = await fetch(RELAY, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task, prompt, from: FROM_KESERA ? "kesera" : "", did: deviceId() }) });
+  let r;
+  try { r = await fetch(RELAY, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task, prompt, from: FROM_KESERA ? "kesera" : "", did: deviceId() }) }); }
+  catch (x) { const e = new Error("net"); e.detail = "通信できません"; throw e; }
   let j = null; try { j = await r.json(); } catch (e) {}
   if (j) applyServerCount(j.left, j.limit);
-  if (r.status === 429) { const e = new Error("rate"); e.code = (j && j.error === "quota") ? "quota" : "rate_limited"; throw e; }
-  if (!r.ok || !j) throw new Error("http " + r.status);
+  if (r.status === 429) { const e = new Error("rate"); e.code = (j && j.error === "quota") ? "quota" : "rate_limited"; e.detail = (j && j.error) || "429"; throw e; }
+  if (!r.ok || !j) { const e = new Error("http " + r.status); e.detail = (j && j.error) || ("http " + r.status); throw e; }
   return j;
 }
 async function getSample() {
@@ -1212,7 +1214,7 @@ ${text}
       (Array.isArray(r.extra) && r.extra.length ? `<p class="note" style="margin:8px 0 0">ご相談に合わせたコツ</p><ul>${r.extra.slice(0, 3).map(d => `<li>${esc(d)}</li>`).join("")}</ul>` : "") +
       `<p class="note">右の「3つの仕上がり」に反映しました。</p>`;
   } catch (e) {
-    out.innerHTML = "<p>うまく答えを受け取れませんでした。回数は減っていません。もう一度お試しください。</p>";
+    out.innerHTML = "<p>うまく答えを受け取れませんでした。回数は減っていません。もう一度お試しください。</p>" + (e && e.detail ? `<p class="note">連絡用の記号：${String(e.detail).replace(/[<>&"]/g, "")}</p>` : "");
   } finally { aiStatus(); }
 }
 document.getElementById("aib").addEventListener("click", askAI);
@@ -1386,7 +1388,7 @@ ${JSON.stringify(items)}
       <p>${escX(r.comment || "")}</p>
       <p class="note">服のページの中身は読めていません。アドレスとメモからの見立てで、商品の品質や実物の色は判断していません。</p>`;
   } catch (e) {
-    out.innerHTML = "<p>うまく答えを受け取れませんでした。回数は減っていません。もう一度お試しください。</p>";
+    out.innerHTML = "<p>うまく答えを受け取れませんでした。回数は減っていません。もう一度お試しください。</p>" + (e && e.detail ? `<p class="note">連絡用の記号：${String(e.detail).replace(/[<>&"]/g, "")}</p>` : "");
   } finally { aiStatus(); }
 }
 document.getElementById("evb").addEventListener("click", evalAI);
